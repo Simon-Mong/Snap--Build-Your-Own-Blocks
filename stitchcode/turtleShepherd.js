@@ -882,3 +882,58 @@ TurtleShepherd.prototype.debug_msg = function (st, clear) {
 	o = st + "<br />" + o;
 	document.getElementById("debug").innerHTML = o;
 };
+
+TurtleShepherd.prototype.toDXF = function() {
+  var dxfString = '',
+      isFirst = false,
+      myself = this,
+      i,
+      stitch,
+      lastStitch;
+  
+  function dxfHead(maxX=1000,maxY=1000) {
+		dxfString += '  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1009\n  9\n$EXTMIN\n 10\n0.0\n 20\n0.0\n 30\n0.0\n  9\n$EXTMAX\n';	
+		dxfString += ' 10\n';
+		dxfString += maxX.toFixed(1).toString();
+		dxfString += '\n 20\n';
+		dxfString += maxY.toFixed(1).toString();
+		dxfString += '\n 30\n0.0\n  9\n$FILLMODE\n 70\n 0\n  9\n$SPLFRAME\n 70\n 1\n  0\nENDSEC\n';
+		dxfString += '  0\nSECTION\n  2\nTABLES\n  0\nTABLE\n  2\nLAYER\n 70\n1\n  0\nLAYER\n  2\n0\n 70\n     0\n 62\n     7\n  6\nCONTINUOUS\n  0\nENDTAB\n  0\nENDSEC\n';
+		dxfString += '  0\nSECTION\n  2\nENTITIES\n';
+  }
+	
+  function dxfLine(start,end) {
+		dxfString += '  0\nLINE\n  8\n0\n  62\n     150\n';
+		dxfString += ' 10\n';
+		dxfString += ((start.x - myself.minX)*0.2).toFixed(3).toString();
+		dxfString += '\n 20\n';
+		dxfString += ((start.y - myself.minY)*0.2).toFixed(3).toString(); 
+		dxfString += '\n 30\n0.0\n 11\n';
+		dxfString += ((end.x - myself.minX)*0.2).toFixed(3).toString();
+		dxfString += '\n 21\n';
+		dxfString += ((end.y - myself.minY)*0.2).toFixed(3).toString(); 
+		dxfString += '\n 31\n0.0\n';		
+  }
+	
+  function dxfEnd() {
+		dxfString += '  0\nENDSEC\n  0\nEOF\n';
+  }
+	
+  dxfHead((this.maxX-this.minX)*0.4 > 1000 ? (this.maxX-this.minX)*0.4 : 1000,(this.maxY-this.minY)*0.4 > 1000 ? (this.maxY-this.minY)*0.4 : 1000);
+  for (i=0; i < this.cache.length; i++) {	
+  	console.log('%s,%f,%f',this.cache[i].cmd,this.cache[i].x,this.cache[i].y);
+  	if (this.cache[i].cmd == "move") {
+  		stitch = this.cache[i];
+  		if (!isFirst) {
+  		  isFirst = true;
+  	  } else {
+  			if (stitch.penDown && (stitch.x != lastStitch.x || stitch.y != lastStitch.y)) {
+  				dxfLine(lastStitch,stitch);
+  			}
+      }
+      lastStitch = stitch;
+  	}
+  }
+  dxfEnd();
+  return dxfString;
+};
