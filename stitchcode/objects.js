@@ -26,7 +26,8 @@ SpriteMorph.prototype.categories =
         'operators',
         'variables',
         'colors',
-        'other',        
+        'other',    
+        'playground',			
         'lists',        
     ];
     
@@ -43,6 +44,7 @@ SpriteMorph.prototype.blockColor = {
     variables : new Color(243, 118, 29),
     lists : new Color(217, 77, 17),
     other: new Color(150, 150, 150),
+	playground : new Color(119,100,36),	
     colors : new Color(207, 74, 217),
 };
 
@@ -1511,245 +1513,6 @@ SpriteMorph.prototype.zoomOut = function () {
     stage.renderer.changed = true;
 };
 
-SpriteMorph.prototype.fillShape = function(spacing, angle) {
-    spacing = Math.max(1, +spacing || 40);
-    angle   = +angle || 0;
-
-    var STITCH_LEN = 4; // fill stitch length in stage units
-
-    // ---- 1. Reconstruct pen-down runs from shepherd cache ----
-    var stage = this.parentThatIsA(StageMorph);
-    var cache = stage.turtleShepherd.cache;
-    var runs = [], currentRun = null, prevPt = null;
-    for (var i = 0; i < cache.length; i++) {
-        var e = cache[i];
-        if (e.cmd !== 'move') continue;
-        var pt = {x: e.x, y: e.y};
-        if (e.penDown) {
-            if (!currentRun) currentRun = prevPt ? [{x: prevPt.x, y: prevPt.y}, pt] : [pt];
-            else currentRun.push(pt);
-        } else {
-            if (currentRun && currentRun.length >= 2) runs.push(currentRun);
-            currentRun = null;
-        }
-        prevPt = pt;
-    }
-    if (currentRun && currentRun.length >= 2) runs.push(currentRun);
-
-    var closedPolys = runs.filter(function(run) {
-        if (run.length < 3) return false;
-        var f = run[0], l = run[run.length - 1];
-        return Math.sqrt((l.x-f.x)*(l.x-f.x)+(l.y-f.y)*(l.y-f.y)) < spacing;
-    });
-    if (!closedPolys.length)
-        throw new Error('fill: no closed outline found — draw a closed shape first');
-
-    // ---- 2. Find closed polygon containing the turtle ----
-    var tx = this.xPosition(), ty = this.yPosition();
-    function pip(px, py, pts) {
-        var inside = false, n = pts.length;
-        for (var i = 0, j = n-1; i < n; j = i++) {
-            var xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
-            if (((yi>py)!==(yj>py)) && (px<(xj-xi)*(py-yi)/(yj-yi)+xi)) inside=!inside;
-        }
-        return inside;
-    }
-    var poly = null;
-    for (var p = 0; p < closedPolys.length; p++) {
-        if (pip(tx, ty, closedPolys[p])) { poly = closedPolys[p]; break; }
-    }
-    if (!poly) throw new Error('fill: turtle is not inside any closed shape');
-
-    // ---- 3. Simplify outline with iterative Douglas-Peucker ----
-    // The stitch-point polygon has vertices every ~STITCH_LEN apart, producing
-    // micro-concavities that cause spurious scan-line crossings. DP removes the
-    // noise while preserving genuine shape features (beak, feet, notches).
-    function dpSimplify(pts, tol) {
-        if (pts.length <= 2) return pts.slice();
-        var keep = new Array(pts.length).fill(false);
-        keep[0] = keep[pts.length-1] = true;
-        var stack = [[0, pts.length-1]];
-        while (stack.length) {
-            var iv = stack.pop(), a = iv[0], b = iv[1];
-            if (b - a <= 1) continue;
-            var x0=pts[a].x, y0=pts[a].y, dx=pts[b].x-x0, dy=pts[b].y-y0;
-            var chord = Math.sqrt(dx*dx+dy*dy);
-            var maxD=0, maxI=a+1;
-            for (var ii=a+1; ii<b; ii++) {
-                var d = chord < 1e-10
-                    ? Math.sqrt((pts[ii].x-x0)*(pts[ii].x-x0)+(pts[ii].y-y0)*(pts[ii].y-y0))
-                    : Math.abs(dy*(pts[ii].x-x0)-dx*(pts[ii].y-y0))/chord;
-                if (d > maxD) { maxD=d; maxI=ii; }
-            }
-            if (maxD > tol) {
-                keep[maxI] = true;
-                stack.push([a, maxI]);
-                stack.push([maxI, b]);
-            }
-        }
-        return pts.filter(function(_,ii){ return keep[ii]; });
-    }
-
-    // Remove repeated closing vertex so DP gets a proper open polyline.
-    var open = poly.slice();
-    var pf=open[0], pl=open[open.length-1];
-    if (Math.sqrt((pl.x-pf.x)*(pl.x-pf.x)+(pl.y-pf.y)*(pl.y-pf.y)) < STITCH_LEN*2)
-        open.pop();
-    var spoly = dpSimplify(open, STITCH_LEN);
-
-    // ---- 4. Rotate simplified polygon so scan lines are horizontal ----
-    function rot(x, y, deg) {
-        var r=deg*Math.PI/180, c=Math.cos(r), s=Math.sin(r);
-        return {x: c*x-s*y, y: s*x+c*y};
-    }
-    var rpoly = spoly.map(function(pt) { return rot(pt.x, pt.y, -angle); });
-    var minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
-    rpoly.forEach(function(pt) {
-        if(pt.x<minX)minX=pt.x; if(pt.x>maxX)maxX=pt.x;
-        if(pt.y<minY)minY=pt.y; if(pt.y>maxY)maxY=pt.y;
-    });
-
-    // ---- 5. Scan-line intersection ----
-    function intersect(y, pts) {
-        var xs=[], n=pts.length;
-        for (var i=0, j=n-1; i<n; j=i++) {
-            var x1=pts[j].x, y1=pts[j].y, x2=pts[i].x, y2=pts[i].y;
-            if ((y1<=y&&y2>y)||(y2<=y&&y1>y)) xs.push(x1+(y-y1)*(x2-x1)/(y2-y1));
-        }
-        xs.sort(function(a,b){return a-b;});
-        return xs;
-    }
-
-    // ---- 6. Build scan-line segments (tatami boustrophedon) ----
-    var segs = [];
-    var rowNum = 0;
-    for (var sy=minY+spacing*0.5; sy<=maxY; sy+=spacing, rowNum++) {
-        var xs = intersect(sy, rpoly);
-        var taOff = (rowNum%2===0) ? 0 : STITCH_LEN*0.5;
-        for (var k=0; k+1<xs.length; k+=2) {
-            if (xs[k+1]-xs[k] < 1) continue;
-            segs.push({
-                fromX: (rowNum%2===0) ? xs[k]+taOff : xs[k+1]-taOff,
-                toX:   (rowNum%2===0) ? xs[k+1]     : xs[k],
-                sy: sy, row: rowNum, id: segs.length
-            });
-        }
-    }
-    if (!segs.length) return;
-
-    // ---- 7. Build segment adjacency graph ----
-    // Two segments on adjacent rows are connected when their centers both fall
-    // within the same scan-line span at the midpoint y. This correctly handles
-    // topology changes (merges/splits) without traversing boundary stitches.
-    var adjList = segs.map(function(){ return []; });
-    var rowMap = {};
-    segs.forEach(function(s,i){ (rowMap[s.row]=rowMap[s.row]||[]).push(i); });
-    segs.forEach(function(si, i) {
-        (rowMap[si.row+1]||[]).forEach(function(j) {
-            var sj = segs[j];
-            var mxs = intersect((si.sy+sj.sy)*0.5, rpoly);
-            var ciX=(si.fromX+si.toX)*0.5, cjX=(sj.fromX+sj.toX)*0.5;
-            for (var m=0; m+1<mxs.length; m+=2) {
-                if (ciX>=mxs[m]-1 && ciX<=mxs[m+1]+1 &&
-                    cjX>=mxs[m]-1 && cjX<=mxs[m+1]+1) {
-                    adjList[i].push(j); adjList[j].push(i); break;
-                }
-            }
-        });
-    });
-
-    // ---- 8. Find connected components via union-find ----
-    var ufP = segs.map(function(_,i){ return i; });
-    function ufFind(x) {
-        while(ufP[x]!==x){ ufP[x]=ufP[ufP[x]]; x=ufP[x]; } return x;
-    }
-    adjList.forEach(function(nbrs,i){
-        nbrs.forEach(function(j){ ufP[ufFind(i)]=ufFind(j); });
-    });
-    var compMap = {};
-    segs.forEach(function(_,i){ var r=ufFind(i); (compMap[r]=compMap[r]||[]).push(i); });
-    var components = Object.values(compMap);
-    components.sort(function(a,b){ return b.length-a.length; }); // largest first
-
-    // ---- 9. DFS traversal ordering within each component ----
-    // Iterative DFS from the topmost segment. Pushing neighbors in reverse order
-    // causes the first listed neighbor to be visited next — this naturally
-    // produces Eulerian-like traversal: all the way down one side of a concave
-    // shape, then back up the other, eliminating cross-region jumps.
-    var visited = segs.map(function(){ return false; });
-    var traversalOrder = [];
-    components.forEach(function(comp) {
-        var startI = comp.reduce(function(best, ci) {
-            return segs[ci].row < segs[best].row ? ci : best;
-        }, comp[0]);
-        var stack = [startI];
-        while (stack.length) {
-            var ci = stack.pop();
-            if (visited[ci]) continue;
-            visited[ci] = true;
-            traversalOrder.push(ci);
-            var nbrs = adjList[ci];
-            for (var k=nbrs.length-1; k>=0; k--) {
-                if (!visited[nbrs[k]]) stack.push(nbrs[k]);
-            }
-        }
-    });
-
-    // ---- 10. Pen-up/down decision ----
-    // Cross-component moves are always jumps. Within a component, stitch if
-    // the midpoint of the diagonal lies inside the simplified polygon.
-    function canConnect(x0, y0, x1, y1) {
-        var midX=(x0+x1)*0.5, midY=(y0+y1)*0.5;
-        var xs = intersect(midY, rpoly);
-        for (var k=0; k+1<xs.length; k+=2)
-            if (midX>=xs[k]-STITCH_LEN && midX<=xs[k+1]+STITCH_LEN) return true;
-        return false;
-    }
-    var segComp = new Array(segs.length);
-    components.forEach(function(comp,ci){ comp.forEach(function(si){ segComp[si]=ci; }); });
-
-    // ---- 11. Execute ----
-    var savedIsDown        = this.isDown;
-    var savedIsRunning     = this.isRunning;
-    var savedStitchType    = this.stitchtype;
-    var savedStitchOptions = Object.assign({}, this.stitchoptions || {});
-    this.stitchtype    = 0;
-    this.isRunning     = true;
-    this.stitchoptions = {length: STITCH_LEN, autoadjust: true};
-
-    var prevToX=null, prevToY=null, prevSegI=-1;
-    var myself = this;
-    traversalOrder.forEach(function(si) {
-        var seg  = segs[si];
-        var from = rot(seg.fromX, seg.sy, angle);
-        var to   = rot(seg.toX,   seg.sy, angle);
-
-        myself.isDown = prevSegI >= 0
-            && segComp[prevSegI] === segComp[si]
-            && canConnect(prevToX, prevToY, seg.fromX, seg.sy);
-        myself.gotoXY(from.x, from.y);
-        myself.isDown = true;
-        myself.gotoXY(to.x, to.y);
-
-        prevToX=seg.toX; prevToY=seg.sy; prevSegI=si;
-    });
-
-    this.isDown        = savedIsDown;
-    this.isRunning     = savedIsRunning;
-    this.stitchtype    = savedStitchType;
-    this.stitchoptions = savedStitchOptions;
-};
-
-SpriteMorph.prototype.setTurboMode = function (bool) {
-    var ide = this.parentThatIsA(IDE_Morph);
-    if (!ide) return;
-    if (bool) {
-        ide.startFastTracking();
-    } else {
-        ide.stopFastTracking();
-    }
-};
-
 
 //SpriteMorph.prototype.thumbnail = function (extentPoint) {};
 //SpriteMorph.prototype.drawNew = function () { this.hide() }
@@ -2133,6 +1896,15 @@ SpriteMorph.prototype.primitiveBlocks = function () {
         defaults: [true]
     };
 
+    myPrimitiveBlocks.jumpStitchOff =
+    {
+		    only: SpriteMorph,
+        type: 'command',
+        spec: 'jump stitch %b',
+        category: 'embroidery',
+        defaults: [false]
+    };
+	
     myPrimitiveBlocks.trimStitch =
     {
 		    only: SpriteMorph,
@@ -2142,23 +1914,6 @@ SpriteMorph.prototype.primitiveBlocks = function () {
     };
 
 	  // more blocks
-
-    myPrimitiveBlocks.fillShape =
-    {
-        only: SpriteMorph,
-        type: 'command',
-        spec: 'fill spacing %n angle %n',
-        category: 'embroidery',
-        defaults: [10, 15]
-    };
-
-    myPrimitiveBlocks.setTurboMode =
-    {
-        type: 'command',
-        spec: 'turbo mode %b',
-        category: 'other',
-        defaults: [true]
-    };
 
     myPrimitiveBlocks.zoomToFit =
     {
@@ -2449,7 +2204,6 @@ SpriteMorph.prototype.blockTemplates = function (
         blocks.push(block('ZStitch'));
         blocks.push(block('satinStitch'));
         blocks.push(block('tatamiStitch'));
-        blocks.push(block('fillShape'));
         blocks.push('-');
         blocks.push('-');
         blocks.push(block('jumpStitch'));
@@ -2457,8 +2211,6 @@ SpriteMorph.prototype.blockTemplates = function (
         blocks.push(block('trimStitch'));
 
   } else if (cat === 'other') {
-        blocks.push(block('setTurboMode'));
-        blocks.push('-');
         blocks.push(block('zoomToFit'));
         blocks.push(block('zoomIn'));
         blocks.push(block('zoomOut'));
@@ -2768,7 +2520,110 @@ SpriteMorph.prototype.blockTemplates = function (
             blocks.push(block('doShowTable'));
         }
 		
- 	}
+ 	} else if (cat === 'playground') {
+		blocks.push(block('resetAll'));
+		blocks.push('-');
+        blocks.push(block('runningStitch'));
+		blocks.push('-');
+        blocks.push(block('forward'));
+        blocks.push('-');
+        blocks.push(block('turn'));
+        blocks.push(block('turnLeft'));
+        blocks.push('-');
+        blocks.push(block('setHeading'));	
+        blocks.push('-');
+        blocks.push('-');
+        blocks.push(block('gotoXY'));		
+        blocks.push(block('arcRight'));
+        blocks.push(block('arcLeft'));
+        blocks.push('-');				
+		blocks.push(block('doRepeat'));
+		blocks.push('-');	
+		blocks.push(block('jumpStitch'));	
+		blocks.push(block('jumpStitchOff'));	
+        blocks.push('-');
+        blocks.push(block('reportVariadicSum'));
+        blocks.push(block('reportDifference'));
+        blocks.push(block('reportVariadicProduct'));
+        blocks.push(block('reportQuotient'));
+        blocks.push(block('reportPower'));		
+		
+		blocks.push('=');
+		
+
+		var titleText = new TextMorph(localize('Examples:'));
+		titleText.fontSize = 12;
+		titleText.setColor(this.paletteTextColor);
+		titleText.isDraggable = false;
+		blocks.push(titleText);
+		blocks.push('-');
+		
+
+		var myself = this;
+		var ide = this.parentThatIsA(IDE_Morph);
+		
+		if (ide) {
+			var playgroundListUrl = ide.resourceURL('stitchcode/Examples/playground/PLAYGROUND');
+			console.log(playgroundListUrl);
+			
+
+			var xhr = new XMLHttpRequest();
+			xhr.open('GET', playgroundListUrl, false); 
+			try {
+				xhr.send();
+				if (xhr.status === 200) {
+					var lines = xhr.responseText.split('\n');
+					for (var i = 0; i < lines.length; i++) {
+						var line = lines[i].trim();
+						if (line === '' || line.startsWith('#')) continue;
+						
+
+						var parts = line.split(',');
+						if (parts.length >= 2) {
+							var buttonText = parts[0].trim();
+							var projectFile = parts[1].trim();
+							
+
+							var projectButton = new PushButtonMorph(
+								null,
+								(function(file, btnText) {
+									return function() {
+										myself.loadPlaygroundProject(file, btnText);
+									};
+								})(projectFile, buttonText),
+								buttonText
+							);
+							projectButton.userMenu = function() {
+								var menu = new MenuMorph(this);
+								menu.addItem('help...', 'showHelp');
+								return menu;
+							};
+							projectButton.selector = 'loadPlaygroundProject';
+							projectButton.showHelp = BlockMorph.prototype.showHelp;
+							projectButton.isDraggable = false;
+							projectButton.hint = localize('Load project: ') + buttonText;
+							blocks.push(projectButton);
+						}
+					}
+				} else {
+					console.log('Failed to load playground list, status: ' + xhr.status);
+					var errorText = new TextMorph(localize('Failed to load examples'));
+					errorText.fontSize = 10;
+					errorText.setColor(new Color(255, 100, 100));
+					errorText.isDraggable = false;
+					blocks.push(errorText);
+				}
+			} catch(e) {
+				console.log('Failed to load playground list: ' + e);
+				var errorText = new TextMorph(localize('Failed to load examples'));
+				errorText.fontSize = 10;
+				errorText.setColor(new Color(255, 100, 100));
+				errorText.isDraggable = false;
+				blocks.push(errorText);
+			}
+		}		
+		
+	}
     return blocks;
 };
 
@@ -3233,8 +3088,8 @@ StageMorph.prototype.initCamera = function () {
               distance = boundingSphere.radius;
 
           if(distance > 0) {
-            var width = Math.max(myself.width(), 480) / myself.scale,
-                height = Math.max(myself.height(), 360) / myself.scale;
+            var width = Math.max(myself.width(), 480),
+                height = Math.max(myself.height(), 360);
 
             this.zoomFactor = Math.max(width / distance, height / distance) * 0.90;
             this.applyZoom();
@@ -3723,4 +3578,73 @@ StageMorph.prototype.mouseClickLeft = function () {
                      this.children,
                      morph => morph instanceof SpriteMorph);
     return sprite.receiveUserInteraction('clicked');
+};
+
+SpriteMorph.prototype.loadPlaygroundProject = function(projectFile, buttonText) {
+    var myself = this;
+    var ide = this.parentThatIsA(IDE_Morph);
+    var stage = this.parentThatIsA(StageMorph);
+    
+    if (!ide) {
+        console.log('IDE not found');
+        return;
+    }
+    
+    var projectUrl = ide.resourceURL('stitchcode/Examples/playground', projectFile);
+	
+	console.log(projectUrl);
+    
+    var confirmDialog = new DialogBoxMorph();
+    confirmDialog.labelString = localize('Load Example');
+    confirmDialog.createLabel();
+    
+    var confirmText = new TextMorph(
+        localize('Load') + '"' + buttonText + '"?' + localize('This will replace your current project.'),
+        confirmDialog.fontSize,
+        confirmDialog.fontStyle,
+        true,
+        false,
+        'center'
+    );
+    confirmDialog.addBody(confirmText);
+    
+    confirmDialog.addButton('ok', 'OK'); 
+    confirmDialog.addButton('cancel', 'Cancel');	
+	
+	confirmDialog.ok = function() {
+        
+		confirmDialog.destroy();
+        var loadingMsg = ide.showMessage('Loading ' + buttonText + '...');
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', projectUrl, true);
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (loadingMsg) loadingMsg.destroy();
+                
+                if (xhr.status === 200) {
+                    try {
+						console.log(xhr.responseText);
+                        ide.rawOpenProjectString(xhr.responseText, true);
+                        ide.showMessage(buttonText + ' loaded!', 2);
+                    } catch(e) {
+                        console.log('Error opening project: ' + e);
+                        ide.showMessage('Error loading project: ' + e, 3);
+                    }
+                } else {
+                    console.log('Failed to load project: ' + projectUrl);
+                    ide.showMessage('Failed to load project: ' + projectFile, 3);
+                }
+            }
+        };
+        xhr.onerror = function() {
+            if (loadingMsg) loadingMsg.destroy();
+            ide.showMessage('Network error loading project', 3);
+        };
+        xhr.send();
+    };
+    
+    
+    confirmDialog.fixLayout();
+    confirmDialog.popUp(myself.world());
 };
